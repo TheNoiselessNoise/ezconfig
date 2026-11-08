@@ -31,9 +31,9 @@ class ServerConfig extends EzConfig {
 
 final cfg = ServerConfig({'host': 'example.com', 'port': 'oops'});
 
-cfg.host.get;   // 'example.com' (valid, so it wins)
-cfg.port.get;   // 8080          (invalid, so the initializer runs)
-cfg.debug.get;  // null          (missing, nullable, so null is fine)
+cfg.host.value;  // 'example.com' (valid, so it wins)
+cfg.port.value;  // 8080          (invalid, so the initializer runs)
+cfg.debug.value; // null          (missing, nullable, so null is fine)
 
 cfg.getData(); // the serialized result, ready to write back to disk
 ```

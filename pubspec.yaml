@@ -1,6 +1,6 @@
 name: ezconfig
 description: Typed configuration for Dart with automatic value validation and sensible defaults.
-version: 1.0.0
+version: 1.0.1
 repository: https://github.com/TheNoiselessNoise/ezconfig
 
 environment:
