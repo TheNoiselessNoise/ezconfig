@@ -1,0 +1,29 @@
+{
+	"EzConfig class": {
+    "prefix": "ezconfig",
+    "body": [
+      "class ${1:MyConfig} extends EzConfig {",
+      "  ",
+      "",
+      "  ${1}([super.data]) {",
+      "    ",
+      "  }",
+      "}",
+    ],
+    "description": "Create an EzConfig class"
+  },
+  "EzConfig EzField definition": {
+    "prefix": "ez_d_field",
+    "body": [
+      "late final EzField<${1:dynamic}> ${2};",
+    ],
+    "description": "Create an EzField definition"
+  },
+  "EzConfig EzField creation": {
+    "prefix": "ez_c_field",
+    "body": [
+      "${1} = field('${1}');",
+    ],
+    "description": "Create an EzField creation"
+  }
+}
