@@ -61,12 +61,12 @@ class ResetConfig extends EzConfig {
   late final EzField<String?> stringNull;
   late final EzField<MyBasicConfig> object;
   late final EzField<MyBasicConfig?> objectNull;
-  late final EzFieldList<int> integerList;
-  late final EzFieldList<int?> integerNullList;
-  late final EzFieldList<Any> anyList;
-  late final EzNullFieldList<int> integerListNullable;
-  late final EzNullFieldList<int?> integerNullListNullable;
-  late final EzNullFieldList<Any> anyListNullable;
+  late final EzList<int> integerList;
+  late final EzList<int?> integerNullList;
+  late final EzList<Any> anyList;
+  late final EzNullList<int> integerListNullable;
+  late final EzNullList<int?> integerNullListNullable;
+  late final EzNullList<Any> anyListNullable;
 
   ResetConfig([super.data]) {
     boolean = field('boolean');
@@ -91,10 +91,10 @@ class ResetConfig extends EzConfig {
 class EnumConfig extends EzConfig {
   late final EzField<TestEnum> enumValue;
   late final EzField<TestEnum?> enumNull;
-  late final EzFieldList<TestEnum> enumList;
-  late final EzFieldList<TestEnum?> enumListNullable;
-  late final EzNullFieldList<TestEnum> enumNullList;
-  late final EzNullFieldList<TestEnum?> enumNullListNullable;
+  late final EzList<TestEnum> enumList;
+  late final EzList<TestEnum?> enumListNullable;
+  late final EzNullList<TestEnum> enumNullList;
+  late final EzNullList<TestEnum?> enumNullListNullable;
 
   final Map<String, dynamic Function()?>? _initials;
 
@@ -122,12 +122,12 @@ class InitialConfig extends EzConfig {
   late final EzField<String?> stringNull;
   late final EzField<MyBasicConfig> object;
   late final EzField<MyBasicConfig?> objectNull;
-  late final EzFieldList<int> integerList;
-  late final EzFieldList<int?> integerNullList;
-  late final EzFieldList<Any> anyList;
-  late final EzNullFieldList<int> integerListNullable;
-  late final EzNullFieldList<int?> integerNullListNullable;
-  late final EzNullFieldList<Any> anyListNullable;
+  late final EzList<int> integerList;
+  late final EzList<int?> integerNullList;
+  late final EzList<Any> anyList;
+  late final EzNullList<int> integerListNullable;
+  late final EzNullList<int?> integerNullListNullable;
+  late final EzNullList<Any> anyListNullable;
   
   final Map<String, dynamic Function()?>? _initials;
 
@@ -157,11 +157,11 @@ class InitialConfig extends EzConfig {
 class MyConfig extends EzConfig {
   late final EzField<MySubConfig> subConfig;
   late final EzField<MySubConfig?> subConfigNullable;
-  late final EzFieldList<MyBasicConfig> basicList;
-  late final EzFieldList<MyBasicConfig?> basicListNullable;
-  late final EzFieldList<int> intList;
-  late final EzFieldList<int?> intListNullable;
-  late final EzFieldList<Any> mixedList;
+  late final EzList<MyBasicConfig> basicList;
+  late final EzList<MyBasicConfig?> basicListNullable;
+  late final EzList<int> intList;
+  late final EzList<int?> intListNullable;
+  late final EzList<Any> mixedList;
 
   MyConfig([super.data]) {
     subConfig = field('subConfig');
@@ -187,9 +187,9 @@ class OuterConfig extends EzConfig {
 
 /// Used for testing nullable lists (values which are either null or list of particular type).
 class NullableListConfig extends EzConfig {
-  late final EzNullFieldList<int> intList;
-  late final EzNullFieldList<int?> intListNullable;
-  late final EzNullFieldList<MyBasicConfig> basicList;
+  late final EzNullList<int> intList;
+  late final EzNullList<int?> intListNullable;
+  late final EzNullList<MyBasicConfig> basicList;
 
   NullableListConfig([super.data]) {
     intList = nullList('intList');
@@ -200,8 +200,8 @@ class NullableListConfig extends EzConfig {
 
 /// Used for testing edge cases
 class NumListConfig extends EzConfig {
-  late final EzFieldList<int> ints;
-  late final EzFieldList<double> doubles;
+  late final EzList<int> ints;
+  late final EzList<double> doubles;
 
   NumListConfig([super.data]) {
     ints = list('ints');
@@ -220,7 +220,7 @@ class SmallConfig extends EzConfig {
 
 /// Used for testing edge cases
 class ListConfig extends EzConfig {
-  late final EzFieldList<SmallConfig> smalls;
+  late final EzList<SmallConfig> smalls;
 
   ListConfig([super.data]) {
     smalls = list('smalls', initial: () => [.new({'id': 7})]);
@@ -1045,7 +1045,7 @@ void main() {
     });
 
     group('FieldList mutation reaches getData', () {
-      final cases = <(String, void Function(EzFieldList<int>), List<int>)>[
+      final cases = <(String, void Function(EzList<int>), List<int>)>[
         ('add', (l) => l.add(4), [1, 2, 3, 4]),
         ('addAll', (l) => l.addAll([4, 5]), [1, 2, 3, 4, 5]),
         ('insert', (l) => l.insert(0, 0), [0, 1, 2, 3]),

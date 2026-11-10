@@ -1,3 +1,7 @@
+## 1.0.2
+
+- encoding/decoding for custom types
+
 ## 1.0.1
 
 - README fix

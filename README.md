@@ -9,8 +9,9 @@ Declare your fields. Hand it a `Map`. Get typed values back, or a sensible defau
 Your config file is user input. User input is wrong. ezconfig assumes that and doesn't throw a tantrum about it.
 
 - **No codegen.** No `build_runner`, no `.g.dart`, no waiting.
-- **No exceptions on bad data.** Invalid values are replaced, not thrown at you.
+- **No exceptions on bad data.** Invalid values are replaced, not thrown at you. (One catch: a custom type with nothing to fall back to. See [Custom types](#custom-types).)
 - **Nested configs and lists** work the way you'd expect.
+- **Your own classes too.** Register a codec and any type can be a field.
 - **Null is a type, not an accident.** Nullable and non-nullable fields are different things, and the API says so.
 - **Validation is opt-in and explicit.** Per field or global, and it rejects with a reason you wrote.
 
@@ -40,7 +41,7 @@ cfg.getData(); // the serialized result, ready to write back to disk
 
 ## Fields
 
-| Factory         | Type            | Stored `null` | Missing (or invalid loaded) key          |
+| Factory         | Type            | Stored `null` | Missing (or invalid loaded) key |
 |-----------------|-----------------|---------------|----------------------|
 | `field`         | `T`             | invalid       | `initial` or default |
 | `fieldNull`     | `T?`            | valid         | `initial` or `null`  |
@@ -49,7 +50,7 @@ cfg.getData(); // the serialized result, ready to write back to disk
 | `nullList`      | `List<T>?`      | valid         | `initial` or `null`  |
 | `nullListNull`  | `List<T?>?`     | valid         | `initial` or `null`  |
 
-`T` can be `bool`, `int`, `double`, `num`, `String`, `enum`, another `EzConfig`, or `dynamic` for "I don't care".
+`T` can be `bool`, `int`, `double`, `num`, `String`, `enum`, another `EzConfig`, a [custom type](#custom-types) with a registered codec, or `dynamic` for "I don't care".
 
 Every factory also accepts `initial` and `validate`.
 
@@ -58,7 +59,7 @@ Every factory also accepts `initial` and `validate`.
 ```dart
 class AppConfig extends EzConfig {
   late final EzField<ServerConfig> server;
-  late final EzFieldList<ServerConfig> replicas;
+  late final EzList<ServerConfig> replicas;
 
   new([super.data]) {
     server = field('server');
@@ -106,6 +107,115 @@ void main() {
 - Without `initial`, an invalid or missing value gives the enum's **first** value, or `null` for nullable fields. The first value is rarely what you meant, so give non-nullable enum fields an `initial`.
 - Lists of enums follow the usual list rules.
 
+### Overriding enum handling
+
+Don't like how enums are stored or parsed? Register a [codec](#custom-types) for the enum instead of calling `registerEnum`. The codec **replaces** the default handling for that enum, so `registerEnum` isn't needed.
+
+```dart
+enum MyEnum { none, one, two, three }
+
+class ServerConfig extends EzConfig {
+  late final EzField<MyEnum> myEnum;
+
+  new([super.data]) {
+    myEnum = field('myEnum', initial: () => .none);
+  }
+}
+
+void main() {
+  EzConfig.registerCodec<MyEnum>(
+    (v) => v.name,
+    (obj, key, v) => MyEnum.values.where((e) => e.name == v).firstOrNull,
+  );
+
+  print(ServerConfig({'myEnum': 'three'}).getData());
+}
+```
+
+Useful for case-insensitive names, legacy aliases, or storing something other than `name`. Everything about [custom types](#custom-types) applies from then on: return `null` from the decoder for anything invalid, and give non-nullable fields an `initial`.
+
+## Custom types
+
+Your own classes, the ones that aren't an `EzConfig`, need a **codec**: how to turn the object into plain data, and how to get it back.
+
+```dart
+class MyObject {
+  final int intValue;
+  MyObject(this.intValue);
+}
+
+void main() {
+  EzConfig.registerCodec<MyObject>(
+    // encode: object -> plain data (this is what ends up in getData())
+    (v) => v.intValue,
+    // decode: raw stored value -> object, or null if it can't be decoded
+    (obj, key, v) => v is int ? .new(v) : null,
+  );
+}
+```
+
+Then use it like any other type, in all six factories:
+
+```dart
+class ServerConfig extends EzConfig {
+  late final EzField<MyObject> object;
+  late final EzField<MyObject?> objectNull;
+  late final EzList<MyObject> items;
+
+  new([super.data]) {
+    object = field('object', initial: () => .new(0));
+    objectNull = fieldNull('objectNull');
+    items = list('items', initial: () => [.new(1), .new(2)]);
+  }
+}
+```
+
+### Decoding
+
+The decoder gets three things: the config being loaded (`obj`), the field key (`key`), and the raw value (`v`). Return `null` to say "this is invalid". That's all it takes to reject a value, and `obj` and `key` let you decode differently, or refuse, per field.
+
+Return `null` for garbage. Don't make something up: a decoder that turns `'abc'` into `MyObject(0)` has just told ezconfig the value is fine, so `recover` and `initial` never run and the garbage is accepted without a sound.
+
+### What happens when decoding fails
+
+For a single field, the order is:
+
+1. A valid stored value (the codec decoded it) wins.
+2. Otherwise, if the key is present, [`recover`](#recovering-bad-data) gets a try.
+3. Otherwise `initial`.
+4. Otherwise, nothing is left.
+
+Step 4 is the catch. ezconfig has built-in defaults for `bool`, `int` and friends, and none for your class:
+
+- **Non-nullable field:** throws `Unhandled default value for 'MyObject' at field 'object'`.
+- **Nullable field:** `null`.
+
+So give non-nullable custom fields an `initial`, or make them nullable.
+
+### Lists
+
+The usual list rules apply (see [the rules](#the-rules)), with decoding as the validity check:
+
+- **With `initial`:** if any item can't be decoded, the whole list is replaced by `initial`.
+- **Without `initial`, non-nullable items:** the same exception as above. There is nothing to patch the bad item with.
+- **Nullable items** (`listNull`, `nullListNull`): an item that can't be decoded becomes `null` and the rest of the list stays.
+
+Nullable lists (`nullList`, `nullListNull`) follow the same rules as their non-null counterparts, plus a stored `null` is valid.
+
+### Encoding
+
+`getData()` runs every value through its codec's encoder. Return plain data: a scalar, a `List` or a `Map`.
+
+A type with no codec doesn't get written as `Instance of 'MyUnregisteredClass'`. It throws:
+
+```
+EzSerializationException: Cannot serialize `MyUnregisteredClass`.
+```
+
+Loudly and at `getData()` is better than a config file full of `Instance of ...` found a week later.
+
+Register codecs once, before you create any config that uses them.
+
 ## Defaults
 
 When a value is missing or invalid and there's no `initial`, you get the built-in default for the type:
@@ -119,6 +229,8 @@ When a value is missing or invalid and there's no `initial`, you get the built-i
 | `String` | `''`                     |
 | `Map`    | `<dynamic, dynamic>{}`   |
 | `List`   | `<dynamic>[]`            |
+
+Custom types have no built-in default. See [Custom types](#custom-types).
 
 Don't like them? Replace them:
 
@@ -204,6 +316,8 @@ port = field('port',
 - Receives the raw stored value and returns the field's type. Return `null` to say "can't fix this", and the usual fallback (`initial`, then the default) takes over.
 - Lists are recovered whole, not element by element.
 - Keep it cheap and side-effect free. Nested configs are rebuilt on every access, so a broken field runs `recover` on every read.
+- For custom types, "invalid" means the codec's decoder returned `null`.
+
 Order of precedence: valid stored value, then `recover`, then `initial`, then the type default.
 
 ## The rules

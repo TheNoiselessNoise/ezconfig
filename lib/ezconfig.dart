@@ -42,6 +42,14 @@ typedef EzFieldValidator<X> = String? Function(X value);
 /// element by element.
 typedef EzFieldRepair<X> = X? Function(Object? raw);
 
+final class _EzCodec {
+  // encode and decode (de/serialize)
+  final Object? Function(Object value) encode;
+  final Object? Function(EzConfig obj, String field, Object? raw) decode;
+  final bool Function(Object raw) matches;
+  const _EzCodec(this.encode, this.decode, this.matches);
+}
+
 /// Exception if any [EzGlobalValidator] or [EzFieldValidator] returns [String].
 final class EzValidationException implements Exception {
   final String key;
@@ -55,6 +63,19 @@ final class EzValidationException implements Exception {
   String toString() => 'EzValidationException: cannot set "$key" ($reason)';
 }
 
+/// Thrown when a value cannot be serialized because its type is neither
+/// natively supported nor has a codec registered with [EzConfig.registerCodec].
+final class EzSerializationException implements Exception {
+  /// The runtime type of the value that could not be serialized.
+  final Type typeToSerialize;
+
+  /// Creates a new [EzSerializationException].
+  const EzSerializationException(this.typeToSerialize);
+
+  @override
+  String toString() => 'EzSerializationException: Cannot serialize `$typeToSerialize`.';
+}
+
 /// A typed, live reference to a single configuration field.
 ///
 /// A [EzField] provides controlled access to a value stored in an [EzConfig]
@@ -66,19 +87,12 @@ class EzField<T> {
   final String key;
 
   final EzFieldValidator<T>? _validator;
-
   final T? Function(Object? raw)? _recover;
-
   final (dynamic raw, bool found) Function() _traverseRaw;
-
   final (bool, T?) Function() _tryGet;
-
   final T Function() _get;
-
   final void Function(T, {required bool strict}) _set;
-
   final T Function() _reset;
-
   final EzDefault<T>? _initial;
 
   /// Creates a field backed by the supplied getter, setter and reset.
@@ -94,19 +108,15 @@ class EzField<T> {
   });
 
   T _getOrInitial() {
-    final (ok, value) = _tryGet();
-    // 1. valid stored value
+    final (ok, value) = _tryGet(); // 1. valid stored value
     if (ok && (value != null || null is T)) return value as T;
     final (raw, found) = _traverseRaw();
-    if (found && _recover != null) {
-      // 2. present but invalid
+    if (found && _recover != null) { // 2. present but invalid
       final fixed = _recover(raw);
       if (fixed != null) return fixed;
     }
-    // 3. missing, or recover gave up
-    if (_initial != null) return _initial();
-    // 4. type default / lenient path
-    return this.value;
+    if (_initial != null) return _initial(); // 3. missing, or recover gave up
+    return this.value; // 4. type default / lenient path
   }
 
   /// Returns the current value of this field.
@@ -133,15 +143,15 @@ class EzField<T> {
 
 /// A live, list-like view of a configuration field containing a list.
 ///
-/// [EzFieldList] implements [ListBase] while routing modifications through
+/// [EzList] implements [ListBase] while routing modifications through
 /// the underlying field setter. This ensures that changes are written back
 /// to the owning [EzConfig], including validation and serialization.
 ///
 /// Most modifying operations work on a copy of the current list and replace
 /// the stored value with the modified copy.
-final class EzFieldList<T> extends EzField<List<T>> with ListBase<T> {
+final class EzList<T> extends EzField<List<T>> with ListBase<T> {
   /// Creates a list view backed by the supplied field getter and setter.
-  EzFieldList(super.key, {
+  EzList(super.key, {
     required super.validator,
     required super.recover,
     required super.traverseRaw,
@@ -208,14 +218,14 @@ final class EzFieldList<T> extends EzField<List<T>> with ListBase<T> {
 
 /// A configuration field containing an optional list.
 ///
-/// Unlike [EzFieldList], which always exposes a non-null list, this class
+/// Unlike [EzList], which always exposes a non-null list, this class
 /// preserves the distinction between a null value and an empty list.
 ///
 /// Use [list] to obtain a list view when the value is non-null, or [ensured]
 /// to initialize the field with an empty list when necessary.
-final class EzNullFieldList<T> extends EzField<List<T>?> {
+final class EzNullList<T> extends EzField<List<T>?> {
   /// Creates a nullable list field backed by the supplied getter and setter.
-  EzNullFieldList(super.key, {
+  EzNullList(super.key, {
     required super.validator,
     required super.recover,
     required super.traverseRaw,
@@ -229,10 +239,10 @@ final class EzNullFieldList<T> extends EzField<List<T>?> {
   /// Whether the underlying list value is null.
   bool get isNull => value == null;
 
-  /// Returns a live [EzFieldList] view if the underlying value is non-null.
+  /// Returns a live [EzList] view if the underlying value is non-null.
   ///
   /// Returns null when the field itself contains null.
-  EzFieldList<T>? get list => value == null ? null : .new(key,
+  EzList<T>? get list => value == null ? null : .new(key,
     validator: (value) => _validator?.call(value),
     recover: (raw) => _recover?.call(value),
     traverseRaw: _traverseRaw,
@@ -245,7 +255,7 @@ final class EzNullFieldList<T> extends EzField<List<T>?> {
   /// Ensures that the field contains a list and returns its live view.
   ///
   /// If the current value is null, an empty list is assigned first.
-  EzFieldList<T> get ensured {
+  EzList<T> get ensured {
     if (value == null) set(<T>[]);
     return list!;
   }
@@ -284,12 +294,12 @@ final class _ConfigView extends MapBase<String, dynamic> {
   bool containsKey(Object? key) => _config._fields.containsKey(key);
 
   @override
-  dynamic operator [](Object? key) => containsKey(key) ? _config._data[key] : null;
+  dynamic operator [](Object? key) => _config._fields[key]?.value;
 
   @override
   void operator []=(String key, dynamic value) {
     if (!containsKey(key)) throw EzValidationException(key, value, 'unknown field');
-    _config._writeField(key, value, strict: true);
+    _config._fields[key]!.value = value;
   }
 
   @override
@@ -311,7 +321,9 @@ final class _ConfigView extends MapBase<String, dynamic> {
 /// statically and are shared between all configuration instances.
 abstract class EzConfig {
   static final Map<Type, EzConfigFactory> _factories = {};
-
+  static final Map<Type, List<Enum>> _enums = {};
+  static final List<EzGlobalValidator> _validators = [];
+  static final Map<Type, _EzCodec> _codecs = {};
   static final Map<Type, EzDefault> _defaults = {
     bool: () => false,
     int: () => 0,
@@ -321,19 +333,6 @@ abstract class EzConfig {
     Map: () => <dynamic, dynamic>{},
     List: () => <dynamic>[],
   };
-
-  static final Map<Type, List<Enum>> _enums = {};
-  
-  static final List<EzGlobalValidator> _validators = [];
-
-  /// Whether field values should be validated during configuration initialization.
-  ///
-  /// By default, validation is performed only when values are explicitly set.
-  /// Override this to `true` to also validate values loaded during initialization.
-  ///
-  /// When enabled, invalid loaded values cause an [EzValidationException]
-  /// instead of being silently replaced or defaulted.
-  bool get strictInitializing => false;
 
   /// Registers a factory for constructing instances of [X].
   ///
@@ -377,6 +376,38 @@ abstract class EzConfig {
   /// Note that converting non-finite values to `int`/`double` is not supported.
   static bool preserveNonFiniteNumbers = true;
 
+  /// Registers a codec for the custom type [T].
+  ///
+  /// [encode] converts a [T] into plain data (a scalar, a [List] or a [Map])
+  /// when the config is serialized.
+  ///
+  /// [decode] converts a raw stored value back into a [T] when a field is read.
+  /// It receives the config being loaded ([obj]), the field key ([field]) and
+  /// the raw value ([raw]). Return `null` if [raw] cannot be decoded: the value
+  /// is then treated as invalid and the usual fallbacks apply (`recover`, then
+  /// `initial`). Never return a made-up value for bad input, or the value is
+  /// accepted as valid and the fallbacks never run.
+  ///
+  /// A codec for an enum overrides the default enum handling, so
+  /// [registerEnum] is not needed for that enum.
+  ///
+  /// Registering another codec for the same type replaces the previous one.
+  static void registerCodec<T>(
+    Object? Function(T value) encode,
+    T? Function(EzConfig obj, String field, Object? raw) decode,
+  ) => _codecs[T] = _EzCodec((v) => encode(v as T), decode, (v) => v is T);
+
+  static _EzCodec? _codecFor(Object v) {
+    final codec = _codecs[v.runtimeType];
+    if (codec != null) return codec;
+    for (final c in _codecs.values) {
+      if (c.matches(v)) return c;
+    }
+    return null;
+  }
+
+  static bool _hasCodec<X>() => _codecs[X] != null;
+
   late final EzConfigParent? _parent;
   final Map _data;
   final Map<String, EzField> _fields = {};
@@ -389,7 +420,31 @@ abstract class EzConfig {
   /// represents a nested configuration.
   EzConfig([Map? data]) : _data = data ?? {};
 
+  /// A [Map] view over this config's declared fields.
+  ///
+  /// - Keys are the declared field keys. Unknown keys are not contained, and
+  ///   reading one returns `null`.
+  /// - Reading returns the field's resolved value, the same as [EzField.value]:
+  ///   `recover` and `initial` apply, and the result is typed (an enum, a
+  ///   custom object or a nested [EzConfig], not plain data). Use [getData] for
+  ///   serializable data.
+  /// - Writing is the same as setting [EzField.value]: validators run, and a
+  ///   rejected value throws [EzValidationException]. An unknown key throws
+  ///   [EzValidationException] too.
+  /// - Fields cannot be removed: [Map.remove] and [Map.clear] throw
+  ///   [UnsupportedError].
+  ///
+  /// The view is live and reflects later changes to the config.
   late final Map<String, dynamic> asMap = _ConfigView(this);
+
+  /// Whether field values should be validated during configuration initialization.
+  ///
+  /// By default, validation is performed only when values are explicitly set.
+  /// Override this to `true` to also validate values loaded during initialization.
+  ///
+  /// When enabled, invalid loaded values cause an [EzValidationException]
+  /// instead of being silently replaced or defaulted.
+  bool get strictInitializing => false;
 
   /// Returns the outermost configuration containing this instance.
   ///
@@ -397,11 +452,7 @@ abstract class EzConfig {
   /// is reached. If this instance has no parent, returns itself.
   EzConfig getRoot() {
     EzConfig current = this;
-
-    while (current._parent != null) {
-      current = current._parent.config;
-    }
-
+    while (current._parent != null) current = current._parent.config;
     return current;
   }
 
@@ -431,28 +482,23 @@ abstract class EzConfig {
 
   (dynamic value, bool found) _get(dynamic data, dynamic segment) {
     if (data is Map) return (data[segment], data.containsKey(segment));
-
     if (data is List) {
       final index = segment is int ? segment : int.tryParse(segment.toString());
-
       if (index != null && index >= 0 && index < data.length) {
         return (data[index], true);
       }
     }
-
     return (null, false);
   }
 
   (dynamic value, bool found) _traverse(List<dynamic> path) {
     dynamic current = _data;
     bool found = true;
-
     for (final segment in path) {
       final (next, isFound) = _get(current, segment);
       current = next;
       found &= isFound;
     }
-
     return (current, found);
   }
 
@@ -463,12 +509,24 @@ abstract class EzConfig {
   dynamic walk(List<dynamic> path) => _traverse(path).$1;
 
   dynamic _serialize(dynamic value) => switch (value) {
-    EzConfig config => config.getData(),
-    Enum e => e.name,
+    num _ || String _ || bool _ || null => value,
     List list => list.map(_serialize).toList(),
     Map map => map.map((key, value) => .new(key, _serialize(value))),
-    _ => value,
+    EzConfig config => config.getData(),
+    Enum e => _codecFor(value)?.encode(e) ?? e.name,
+    _ => switch (_codecFor(value)) {
+      final c? => _serialize(c.encode(value)),
+      _ => throw EzSerializationException(value.runtimeType),
+    },
   };
+
+  T? _decode<T>(String field, Object? raw) {
+    if (raw is T) return raw; // already an instance
+    final c = _codecs[T]; // exact T
+    if (c == null) return null;
+    final v = c.decode(this, field, raw);
+    return v is T ? v : null; // null = invalid
+  }
 
   F _regField<F extends EzField>(String key, F field) {
     _fields[key] = field;
@@ -499,12 +557,10 @@ abstract class EzConfig {
   String getPath(String field) {
     final path = <String>[field];
     EzConfigParent? current = _parent;
-
     while (current != null) {
       path.insert(0, current.key);
       current = current.config._parent;
     }
-
     return path.join('.');
   }
 
@@ -512,20 +568,18 @@ abstract class EzConfig {
 
   bool _isEnum<T>() => <T>[] is List<Enum?>;
 
-  dynamic _coerceNum<X>(dynamic v, {bool nullable = false}) {
+  dynamic _coerceNum<X>(String field, dynamic v, {bool nullable = false}) {
     if (v is num && (X == num || (X == int && v is double) || (X == double && v is int))) {
       if (!v.isFinite) {
         if (preserveNonFiniteNumbers) return v;
-        return nullable ? null : _getDefault<X>();
+        return nullable ? null : _getDefault<X>(field);
       }
-
       return switch (X) {
         const (int) => v.toInt(),
         const (double) => v.toDouble(), 
         _ => v,
       };
     }
-
     return v;
   }
 
@@ -551,7 +605,7 @@ abstract class EzConfig {
     return found ?? _enums[X]!.first as X;
   }
 
-  static T _builtinDefault<T, A>({bool? nullable, EzConfigParent? parent}) {
+  static T _builtinDefault<T, A>(String field, {bool? nullable, EzConfigParent? parent}) {
     if (nullable == true) return null as T;
     if (<A>[] is T) return <A>[] as T;
     if (null is A) return null as T;
@@ -561,13 +615,14 @@ abstract class EzConfig {
     if (_factories[T] case EzConfigFactory fac) return fac({}) as T; // NOTE: no need for parent
     if (_enums[A] case List<Enum> values) return values.first as T;
     if (_enums[T] case List<Enum> values) return values.first as T;
-    throw StateError("Unhandled type for ($T) ($A).");
+    if (T == A) throw StateError("Unhandled default value for '$T' at field '$field'.");
+    throw StateError("Unhandled default value for ($T, $A) at field '$field'.");
   }
 
-  static X _getDefault<X>([dynamic value]) {
+  static X _getDefault<X>(String field, [dynamic value]) {
     if (value is X) return value;
     if (value == null && null is X) return null as X;
-    return _defaults[X]?.call() ?? _builtinDefault<X, X>();
+    return _defaults[X]?.call() ?? _builtinDefault<X, X>(field);
   }
 
   // ---- single fields ----
@@ -575,24 +630,26 @@ abstract class EzConfig {
   X _readField<X>(String field) {
     final (value, _) = _traverse([field]);
     if (_isConfig<X>()) return _buildConfig<X>(field, value is Map ? value : {});
+    if (_decode<X>(field, value) case X d) return d;
     if (_isEnum<X>()) return _buildEnum<X>(field, value);
-    return _getDefault<X>(_coerceNum<X>(value));
+    return _getDefault<X>(field, _coerceNum<X>(field, value));
   }
 
   (bool, X?) _tryReadField<X>(String field) {
     final (value, _) = _traverse([field]);
-
     if (_isConfig<X>()) {
       if (value is! Map) return (false, null);
       return (true, _buildConfig<X>(field, value));
     }
-
+    if (_hasCodec<X>()) {
+      if (_decode<X>(field, value) case X d) return (true, d);
+      return (false, null);
+    }
     if (_isEnum<X>()) {
       if (value is! String || _findEnum<X>(value) == null) return (false, null);
       return (true, _buildEnum<X>(field, value));
     }
-
-    final coerced = _coerceNum<X>(value);
+    final coerced = _coerceNum<X>(field, value);
     return coerced is X ? (true, coerced) : (false, null);
   }
 
@@ -600,28 +657,29 @@ abstract class EzConfig {
     final (value, found) = _traverse([field]);
     if (!found) return null;
     if (_isConfig<X>()) return value is Map ? _buildConfig<X>(field, value) : null;
+    if (_hasCodec<X>()) return _decode<X>(field, value);
     if (_isEnum<X>()) return value is String ? _findEnum<X>(value) : null;
-    final v = _coerceNum<X>(value, nullable: true);
+    final v = _coerceNum<X>(field, value, nullable: true);
     return v is X ? v : null;
   }
 
   (bool, X?) _tryReadFieldNull<X>(String field) {
     final (value, found) = _traverse([field]);
-
     if (!found) return (false, null); // missing: let the initializer run
     if (value == null) return (true, null);
-
     if (_isConfig<X>()) {
       if (value is! Map) return (false, null);
       return (true, _buildConfig<X>(field, value));
     }
-
+    if (_hasCodec<X>()) {
+      if (_decode<X>(field, value) case X d) return (true, d);
+      return (false, null);
+    }
     if (_isEnum<X>()) {
       if (value is! String || _findEnum<X>(value) == null) return (false, null);
       return (true, _buildEnum<X>(field, value));
     }
-
-    final v = _coerceNum<X>(value, nullable: true);
+    final v = _coerceNum<X>(field, value, nullable: true);
     return v is X ? (true, v) : (false, null);
   }
 
@@ -629,12 +687,10 @@ abstract class EzConfig {
 
   List<E>? _decodeList<E, X>(String field, dynamic value) {
     if (value is! List) return null;
-
     final nullable = null is E;
     final configurable = _isConfig<E>();
     final enum_ = _isEnum<E>();
     final items = <E>[];
-
     for (final item in value) {
       if (configurable) {
         if (nullable && item is! Map) {
@@ -644,34 +700,35 @@ abstract class EzConfig {
         }
         continue;
       }
-
+      if (_decode<X>(field, item) case X d) {
+        items.add(d as E);
+        continue;
+      }
       if (enum_) {
         final e = item is String ? _findEnum<X>(item) : null;
         items.add(e != null ? e as E : (nullable ? null as E : _buildEnum<X>(field, item) as E));
         continue;
       }
-
-      final v = _coerceNum<X>(item);
+      final v = _coerceNum<X>(field, item);
       if (v is E) {
         items.add(v);
       } else {
-        items.add(nullable ? null as E : _getDefault<E>(v));
+        items.add(nullable ? null as E : _getDefault<E>(field, v));
       }
     }
-
     return items;
   }
 
   List<X> _readList<X>(String field) {
     final (value, found) = _traverse([field]);
     if (!found) return [];
-    return _decodeList<X, X>(field, value) ?? _builtinDefault<List<X>, X>();
+    return _decodeList<X, X>(field, value) ?? _builtinDefault<List<X>, X>(field);
   }
 
   List<X?> _readListNull<X>(String field) {
     final (value, found) = _traverse([field]);
     if (!found) return [];
-    return _decodeList<X?, X>(field, value) ?? _builtinDefault<List<X?>, X>();
+    return _decodeList<X?, X>(field, value) ?? _builtinDefault<List<X?>, X>(field);
   }
 
   List<X>? _readNullList<X>(String field)
@@ -683,11 +740,9 @@ abstract class EzConfig {
   // Strict: all-or-nothing, no default-filling. Original `_decodeList` is lenient.
   (bool, List<E>?) _tryDecodeList<E, X>(String field, dynamic value) {
     if (value is! List) return (false, null);
-
     final nullable = null is E;
     final configurable = _isConfig<E>();
     final enum_ = _isEnum<E>();
-
     // pass 1: validate only, no side effects
     for (final item in value) {
       if (item == null) {
@@ -698,13 +753,17 @@ abstract class EzConfig {
         if (item is! Map) return (false, null);
         continue;
       }
+      if (_hasCodec<X>()) {
+        final d = _decode<X>(field, item);
+        if (d == null) return (false, null);
+        continue;
+      }
       if (enum_) {
         if (item is! String || _findEnum<X>(item) == null) return (false, null);
         continue;
       }
-      if (_coerceNum<X>(item) is! E) return (false, null);
+      if (_coerceNum<X>(field, item) is! E) return (false, null);
     }
-
     // pass 2: build, cannot fail now
     final items = <E>[];
     for (final item in value) {
@@ -712,13 +771,14 @@ abstract class EzConfig {
         items.add(null as E);
       } else if (configurable) {
         items.add(_buildConfig<X>(field, item as Map) as E);
+      } else if (_hasCodec<X>()) {
+        items.add(_decode<X>(field, item) as E);
       } else if (enum_) {
         items.add(_buildEnum<X>(field, item as String) as E);
       } else {
-        items.add(_coerceNum<X>(item) as E);
+        items.add(_coerceNum<X>(field, item) as E);
       }
     }
-
     return (true, items);
   }
 
@@ -760,7 +820,7 @@ abstract class EzConfig {
     tryGet: () => _tryReadField<T>(key),
     get: () => _readField<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<T, T>(),
+    reset: () => _builtinDefault<T, T>(key),
     initial: initial,
   ));
 
@@ -776,13 +836,13 @@ abstract class EzConfig {
     tryGet: () => _tryReadFieldNull<T>(key),
     get: () => _readFieldNull<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<T?, T?>(nullable: true),
+    reset: () => _builtinDefault<T?, T?>(key, nullable: true),
     initial: initial,
   ));
 
   /// Registers and returns a non-nullable list field containing elements
   /// of type [T].
-  EzFieldList<T> list<T>(String key, {
+  EzList<T> list<T>(String key, {
     EzFieldValidator<List<T>>? validate,
     EzDefault<List<T>>? initial,
     EzFieldRepair<List<T>>? recover,
@@ -793,13 +853,13 @@ abstract class EzConfig {
     tryGet: () => _tryReadList<T>(key),
     get: () => _readList<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<List<T>, T>(),
+    reset: () => _builtinDefault<List<T>, T>(key),
     initial: initial,
   ));
 
   /// Registers and returns a non-nullable list field containing nullable
   /// elements of type [T].
-  EzFieldList<T?> listNull<T>(String key, {
+  EzList<T?> listNull<T>(String key, {
     EzFieldValidator<List<T?>>? validate,
     EzDefault<List<T?>>? initial,
     EzFieldRepair<List<T?>>? recover,
@@ -810,13 +870,13 @@ abstract class EzConfig {
     tryGet: () => _tryReadListNull<T>(key),
     get: () => _readListNull<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<List<T?>, T>(),
+    reset: () => _builtinDefault<List<T?>, T>(key),
     initial: initial,
   ));
 
   /// Registers and returns a nullable list field containing non-nullable
   /// elements of type [T].
-  EzNullFieldList<T> nullList<T>(String key, {
+  EzNullList<T> nullList<T>(String key, {
     EzFieldValidator<List<T>?>? validate,
     EzDefault<List<T>?>? initial,
     EzFieldRepair<List<T>?>? recover,
@@ -827,13 +887,13 @@ abstract class EzConfig {
     tryGet: () => _tryReadNullList<T>(key),
     get: () => _readNullList<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<List<T>?, T>(nullable: true),
+    reset: () => _builtinDefault<List<T>?, T>(key, nullable: true),
     initial: initial,
   ));
 
   /// Registers and returns a nullable list field containing nullable
   /// elements of type [T].
-  EzNullFieldList<T?> nullListNull<T>(String key, {
+  EzNullList<T?> nullListNull<T>(String key, {
     EzFieldValidator<List<T?>?>? validate,
     EzDefault<List<T?>?>? initial,
     EzFieldRepair<List<T?>?>? recover,
@@ -844,7 +904,7 @@ abstract class EzConfig {
     tryGet: () => _tryReadNullListNull<T>(key),
     get: () => _readNullListNull<T>(key),
     set: (value, {required bool strict}) => _writeField(key, value, strict: strict),
-    reset: () => _builtinDefault<List<T?>?, T>(nullable: true),
+    reset: () => _builtinDefault<List<T?>?, T>(key, nullable: true),
     initial: initial,
   ));
 
@@ -858,14 +918,9 @@ abstract class EzConfig {
   /// Throws a [StateError] if any of the specified keys does not exist.
   void reset([List<String>? keys]) {
     final fields = keys ?? _fields.keys;
-
     for (final key in fields) {
       final field = _fields[key];
-
-      if (field == null) {
-        throw StateError("Field '$key' does not exist.");
-      }
-
+      if (field == null) throw StateError("Field '$key' does not exist.");
       field.reset();
     }
   }
